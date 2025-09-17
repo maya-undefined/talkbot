@@ -1,0 +1,18 @@
+services:
+  db:
+#    image: postgres:16
+    image: ankane/pgvector
+    container_name: fin-pg
+    environment:
+      POSTGRES_USER: appuser
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: finadvisor
+    ports:
+      - "5432:5432"
+    volumes:
+      - finpg_data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    restart: unless-stopped
+volumes:
+  finpg_data:
+
