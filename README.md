@@ -28,6 +28,20 @@ Container
     docker build -t fin-advisor:dev .
     docker run --rm -p 8000:8000 --env-file .env.example fin-advisor:dev
 
+#### Personas
+
+Alter the app/core/personas.py file to suit your needs.
+
+### Environment variables
+
+Consult the env.example. You should have something like
+
+    OPENAI_API_KEY=
+    TENANT_ID=t1
+    LOG_LEVEL=INFO
+    DATABASE_URL=postgresql+psycopg://appuser:pass@localhost:5432/finadvisor
+    OPENAI_BASE_URL=https://api.openai.com/v1
+
 
 ### Gradio UI
 
