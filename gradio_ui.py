@@ -1,9 +1,11 @@
-import os, json, asyncio
+import asyncio
+import os
 import httpx
 import gradio as gr
 
 API_BASE = os.getenv("API_BASE", "http://127.0.0.1:8000")
 TENANT_ID = os.getenv("TENANT_ID", "t1")
+SESSION_ID = os.getenv("SESSION_ID", "demo-memory-session")
 PERSONAS = {
     "Budget Coach": "budget_coach",
     "Pro Analyst": "pro_analyst",
@@ -57,7 +59,7 @@ async def ingest_file(file_obj, tenant_id: str):
         except Exception:
             return f"❌ Ingest failed: {r.text}"
 
-async def chat(messages, persona_label, tenant_id):
+async def chat(messages, persona_label, tenant_id, session_id):
     persona_id = PERSONAS.get(persona_label, "budget_coach")
 
     # Gradio Chatbot history is a list of [user, assistant] pairs.
@@ -76,48 +78,47 @@ async def chat(messages, persona_label, tenant_id):
         pass
 
     payload = {
+        "session_id": session_id,
         "tenant_id": tenant_id,
         "persona_id": persona_id,
         "messages": api_messages,
-        "top_k": 6,
     }
 
     async with httpx.AsyncClient(timeout=180) as client:
-        r = await client.post(f"{API_BASE}/chat_pg", json=payload)
+        r = await client.post(f"{API_BASE}/agent/run", json=payload)
         try:
             r.raise_for_status()
             data = r.json()
-            answer = data.get("answer", "")
-            citations = data.get("citations", [])
-            cite_lines = []
-            for i, c in enumerate(citations, 1):
-                title = (c.get("meta", {}) or {}).get("title") or c.get("doc_id")
-                page = (c.get("meta", {}) or {}).get("page", "?")
-                score = c.get("score")
-                try:
-                    score_str = f"{float(score):.3f}" if score is not None else ""
-                except Exception:
-                    score_str = ""
-                cite_lines.append(f"[{i}] {title} p.{page}" + (f" (score={score_str})" if score_str else ""))
-            side = "No citations." if not cite_lines else "\n".join(cite_lines)
-            return answer, side
+            answer = data.get("assistant_message", "")
+            memory_writes = data.get("memory_writes", [])
+            if not memory_writes:
+                return answer, "No new memory writes."
+
+            write_lines = []
+            for i, memory_write in enumerate(memory_writes, 1):
+                memory_type = memory_write.get("memory_type", "unknown")
+                memory_value = memory_write.get("value", {})
+                content = memory_value.get("content", "")
+                write_lines.append(f"[{i}] {memory_type}: {content}")
+            return answer, "\n".join(write_lines)
         except Exception:
-            return f"❌ Chat failed: {r.text}", ""
+            return f"❌ Agent run failed: {r.text}", ""
 
 def sync_ingest(file_obj, tenant_id):
     return asyncio.run(ingest_file(file_obj, tenant_id))
 
-def sync_chat(history, persona_label, tenant_id):
-    answer, cites = asyncio.run(chat(history, persona_label, tenant_id))
+def sync_chat(history, persona_label, tenant_id, session_id):
+    answer, run_info = asyncio.run(chat(history, persona_label, tenant_id, session_id))
     # Append assistant turn for Gradio chat UI
     history = history + [[None, answer]]
-    return history, cites
+    return history, run_info
 
 with gr.Blocks(title="Financial Advisor Bot") as demo:
     gr.Markdown("## Financial Advisor Bot — Demo UI\nUpload docs, then chat with a chosen persona. Backend: FastAPI + Postgres + pgvector + OpenAI.")
     with gr.Row():
         with gr.Column(scale=3):
             tenant = gr.Textbox(value=TENANT_ID, label="Tenant ID")
+            session_id = gr.Textbox(value=SESSION_ID, label="Session ID")
             persona = gr.Dropdown(choices=list(PERSONAS.keys()), value="Budget Coach", label="Persona")
             uploader = gr.File(label="Upload CSV/TXT/PDF", file_types=[".csv", ".txt", ".pdf"],  type="filepath")
             ingest_btn = gr.Button("Ingest to /ingest_pg")
@@ -127,17 +128,21 @@ with gr.Blocks(title="Financial Advisor Bot") as demo:
             chatbox = gr.Chatbot(height=340, label="Chat")
             user_in = gr.Textbox(placeholder="Ask about June spend…", label="Your message")
             send = gr.Button("Send")
-            cites = gr.Textbox(label="Citations", lines=8)
-            def on_send(user_msg, history, persona_label, tenant_id):
+            cites = gr.Textbox(label="Run details", lines=8)
+            def on_send(user_msg, history, persona_label, tenant_id, current_session_id):
                 if not user_msg.strip():
                     return "", history, cites.value
                 history = history + [[user_msg, None]]
-                history, citations = sync_chat(history, persona_label, tenant_id)
+                history, citations = sync_chat(history, persona_label, tenant_id, current_session_id)
                 return "", history, citations
 
-            send.click(fn=on_send, inputs=[user_in, chatbox, persona, tenant], outputs=[user_in, chatbox, cites])
+            send.click(
+                fn=on_send,
+                inputs=[user_in, chatbox, persona, tenant, session_id],
+                outputs=[user_in, chatbox, cites],
+            )
         with gr.Column(scale=2):
-            gr.Markdown("### Tips\n- Ingest a CSV with transactions first.\n- Ask: *“Total restaurant spend in 2025-06 with citations.”*")
+            gr.Markdown('### Tips\n- Keep the same Session ID across reloads to preserve memory retrieval context.\n- Ask: *"I prefer low-risk ETFs"*, then ask later: *"What investment style do I like?"*')
             gr.Markdown("### Status")
             status = gr.JSON(value={"api_base": API_BASE})
 
