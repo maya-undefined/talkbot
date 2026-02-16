@@ -6,7 +6,7 @@ from pathlib import Path
 
 from sqlalchemy.exc import ProgrammingError
 
-from app.models.sql import MemoryType
+from app.models.sql import MemoryItem, MemoryType
 from app.store.memory import MemoryManager, MemoryWriteRequest
 
 
@@ -169,3 +169,9 @@ def test_memory_manager_falls_back_when_memory_tables_missing(monkeypatch) -> No
     assert len(retrieved) == 1
     assert retrieved[0].content == "I prefer low-volatility funds"
     assert "low-volatility funds" in summary
+
+
+def test_memory_item_enum_uses_lowercase_db_values() -> None:
+    """ORM enum config should persist lowercase values matching migration enum labels."""
+
+    assert MemoryItem.__table__.c.type.type.enums == ["episodic", "semantic", "procedural"]

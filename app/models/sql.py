@@ -76,7 +76,15 @@ class MemoryItem(Base):
     id = Column(String, primary_key=True)
     tenant_id = Column(String, index=True, nullable=False)
     session_id = Column(String, nullable=True)
-    type = Column(Enum(MemoryType, name="memory_type"), nullable=False)
+    type = Column(
+        Enum(
+            MemoryType,
+            name="memory_type",
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+            validate_strings=True,
+        ),
+        nullable=False,
+    )
     content = Column(Text, nullable=False)
     tags = Column(JSONB, nullable=False, default=list)
     importance = Column(Float, nullable=False, default=0.5)
