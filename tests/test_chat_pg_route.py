@@ -82,7 +82,10 @@ def test_chat_pg_falls_back_when_chat_429_persists(monkeypatch) -> None:
     resp = client.post("/chat_pg", json=payload)
 
     assert resp.status_code == 200
-    assert "Answer (demo):" in resp.json()["answer"]
+    answer = resp.json()["answer"]
+    assert "Disclosure:" in answer
+    assert "SYSTEM:" not in answer
+    assert "Q:" not in answer
 
 
 def test_chat_pg_openapi_path_still_mounted() -> None:

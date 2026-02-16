@@ -1,7 +1,7 @@
-from typing import List, Dict, Any
+from typing import Dict, List
+
 from ..core.policies import POLICY_PACKS
 from ..store.memory import TENANTS
-from ..models.schemas import Message
 
 
 def sanitize_retrieved_text(tenant_id: str, text: str) -> str:
@@ -11,24 +11,37 @@ def sanitize_retrieved_text(tenant_id: str, text: str) -> str:
         out = out.replace(marker, "")
     return out
 
+
 class LLM:
-    def complete(self, system: str, messages: List[Dict[str, str]], context: List[dict], tool_results: List[dict]) -> str:
+    def complete(
+        self,
+        system: str,
+        messages: List[Dict[str, str]],
+        context: List[dict],
+        tool_results: List[dict],
+    ) -> str:
+        _ = system
         lines = []
-        lines.append(f"SYSTEM: {system[:140]}…\n")
         user_last = next((m["content"] for m in reversed(messages) if m.get("role") == "user"), "")
-        lines.append(f"Q: {user_last}\n")
+        if user_last:
+            lines.append(f"You asked: {user_last}\n")
         if context:
-            lines.append("\nRetrieved context (top):\n")
+            lines.append("\nSupporting sources:\n")
             for i, c in enumerate(context[:3], 1):
-                title = c["meta"].get("title", c["doc_id"]); page = c["meta"].get("page", "?")
+                title = c["meta"].get("title", c["doc_id"])
+                page = c["meta"].get("page", "?")
                 preview = (c["text"] or "")[:180].replace("\n", " ")
                 lines.append(f"  [{i}] {title} p.{page}: {preview} …\n")
         if tool_results:
             lines.append("\nTool results:\n")
             for tr in tool_results:
                 lines.append(f"  - {tr['name']}: {tr['output']}\n")
-        lines.append("\nAnswer (demo): Based on the retrieved statements and calculations above, here’s a concise, grounded response with citations [1]-[3]. ")
+        lines.append(
+            "\nI can help with budgeting questions and next-step recommendations. "
+            "Please share a bit more detail so I can give a concrete answer."
+        )
         lines.append("\nDisclosure: This information is for educational purposes and is not financial advice.")
         return "".join(lines)
+
 
 LLM_ENGINE = LLM()
