@@ -140,6 +140,72 @@ def test_agent_run_retrieve_context_handles_embedding_429(monkeypatch) -> None:
     assert result == []
 
 
+def test_agent_run_retries_openai_429_then_succeeds(monkeypatch) -> None:
+    """LLM call should retry on transient 429 and return provider output if retry succeeds."""
+
+    req = AgentRunRequest(
+        session_id="s1",
+        tenant_id="t1",
+        persona_id="budget_coach",
+        messages=[{"role": "user", "content": "hello"}],
+    )
+    state = {"calls": 0}
+
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    async def flaky_answer(*_args, **_kwargs) -> str:
+        state["calls"] += 1
+        if state["calls"] < 3:
+            request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+            response = httpx.Response(429, request=request)
+            raise httpx.HTTPStatusError("rate limited", request=request, response=response)
+        return "recovered"
+
+    monkeypatch.setattr("app.api.routes_agent_run.OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("app.api.routes_agent_run.answer_with_openai", flaky_answer)
+    monkeypatch.setattr("app.api.routes_agent_run.asyncio.sleep", no_sleep)
+
+    result = asyncio.run(_run_llm(req, []))
+    assert result == "recovered"
+    assert state["calls"] == 3
+
+
+def test_agent_run_retries_embedding_429_then_succeeds(monkeypatch) -> None:
+    """Retrieval should retry embedding calls on transient 429 responses."""
+
+    req = AgentRunRequest(
+        session_id="s1",
+        tenant_id="t1",
+        persona_id="budget_coach",
+        messages=[{"role": "user", "content": "hello"}],
+    )
+    state = {"calls": 0}
+
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    async def flaky_embed(_texts):
+        state["calls"] += 1
+        if state["calls"] < 3:
+            request = httpx.Request("POST", "https://api.openai.com/v1/embeddings")
+            response = httpx.Response(429, request=request)
+            raise httpx.HTTPStatusError("rate limited", request=request, response=response)
+        return [[0.1, 0.2, 0.3]]
+
+    def fake_search(_tenant_id, _query_vec, top_k: int = 8) -> list[dict]:
+        _ = top_k
+        return [{"doc_id": "d1", "meta": {}, "text": "ok"}]
+
+    monkeypatch.setattr("app.api.routes_agent_run.embed_texts", flaky_embed)
+    monkeypatch.setattr("app.api.routes_agent_run.PGV.search", fake_search)
+    monkeypatch.setattr("app.api.routes_agent_run.asyncio.sleep", no_sleep)
+
+    result = asyncio.run(_retrieve_context(req))
+    assert result == [{"doc_id": "d1", "meta": {}, "text": "ok"}]
+    assert state["calls"] == 3
+
+
 def test_existing_endpoints_still_present_in_openapi() -> None:
     """Ensure legacy endpoints remain mounted during rollout."""
 

@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
+
+from typing import Awaitable, Callable, TypeVar
+
 from uuid import uuid4
 
 import httpx
@@ -20,12 +23,30 @@ from ..store.pgvector_repo import PGV
 
 router = APIRouter()
 _SESSION_LOCKS: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+T = TypeVar("T")
+_MAX_429_RETRIES = 3
+_BACKOFF_BASE_SECONDS = 0.2
 
 
 def _is_rate_limited(exc: Exception) -> bool:
     """Return whether an exception corresponds to provider rate limiting."""
 
     return isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429
+
+
+async def _with_429_backoff(operation: Callable[[], Awaitable[T]]) -> T:
+    """Run an async operation with bounded exponential backoff for HTTP 429 errors."""
+
+    attempt = 0
+    while True:
+        try:
+            return await operation()
+        except httpx.HTTPStatusError as exc:
+            if not _is_rate_limited(exc) or attempt >= _MAX_429_RETRIES:
+                raise
+            await asyncio.sleep(_BACKOFF_BASE_SECONDS * (2**attempt))
+            attempt += 1
+
 
 
 def _fallback_assistant_message(req: AgentRunRequest, context: list[dict]) -> str:
@@ -46,8 +67,12 @@ async def _retrieve_context(req: AgentRunRequest, top_k: int = 8) -> list[dict]:
     if not user_last:
         return []
 
+    async def _embed_query() -> list:
+        return await embed_texts([user_last])
+
     try:
-        query_vector = (await embed_texts([user_last]))[0]
+        query_vector = (await _with_429_backoff(_embed_query))[0]
+
     except httpx.HTTPStatusError as exc:
         if _is_rate_limited(exc):
             return []
@@ -67,8 +92,12 @@ async def _run_llm(req: AgentRunRequest, context: list[dict]) -> str:
     if not OPENAI_API_KEY:
         return _fallback_assistant_message(req, context)
 
-    try:
+    async def _chat_completion() -> str:
         return await answer_with_openai(persona["system"], messages, context, [])
+
+    try:
+        return await _with_429_backoff(_chat_completion)
+
     except httpx.HTTPStatusError as exc:
         if _is_rate_limited(exc):
             return _fallback_assistant_message(req, context)
