@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 from typing import Awaitable, Callable, TypeVar
+
 from uuid import uuid4
 
 import httpx
@@ -46,6 +47,7 @@ async def _with_429_backoff(operation: Callable[[], Awaitable[T]]) -> T:
             attempt += 1
 
 
+
 def _fallback_assistant_message(req: AgentRunRequest, context: list[dict]) -> str:
     """Generate a local fallback response when remote LLM calls are unavailable."""
 
@@ -69,6 +71,7 @@ async def _retrieve_context(req: AgentRunRequest, top_k: int = 8) -> list[dict]:
 
     try:
         query_vector = (await _with_429_backoff(_embed_query))[0]
+
     except httpx.HTTPStatusError as exc:
         if _is_rate_limited(exc):
             return []
@@ -93,6 +96,7 @@ async def _run_llm(req: AgentRunRequest, context: list[dict]) -> str:
 
     try:
         return await _with_429_backoff(_chat_completion)
+
     except httpx.HTTPStatusError as exc:
         if _is_rate_limited(exc):
             return _fallback_assistant_message(req, context)
