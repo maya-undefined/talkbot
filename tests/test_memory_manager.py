@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from sqlalchemy.exc import ProgrammingError
+
 from app.models.sql import MemoryType
 from app.store.memory import MemoryManager, MemoryWriteRequest
 
@@ -120,3 +122,50 @@ def test_memory_manager_summarize_session_updates_summary() -> None:
 
     assert "User asked for 50/30/20 budget guidance" in summary
     assert "User prefers concise answers" in summary
+
+
+def test_memory_manager_falls_back_when_memory_tables_missing(monkeypatch) -> None:
+    """Manager should not raise when memory tables are not migrated yet."""
+
+    class _FakeOrigError(Exception):
+        pgcode = "42P01"
+
+    class _FailingSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def execute(self, *_args, **_kwargs):
+            raise ProgrammingError("SELECT ...", {}, _FakeOrigError())
+
+    manager = MemoryManager()
+    manager.reset_fallback()
+
+    monkeypatch.setattr("app.store.memory.SessionLocal", lambda: _FailingSession())
+
+    writes = manager.write(
+        [
+            MemoryWriteRequest(
+                tenant_id="t1",
+                session_id="s1",
+                memory_type=MemoryType.SEMANTIC,
+                content="I prefer low-volatility funds",
+                tags=["preference"],
+                importance=0.8,
+            )
+        ]
+    )
+    retrieved = manager.retrieve(
+        session_id="s1",
+        tenant_id="t1",
+        query_text="What risk profile do I prefer?",
+        top_k=3,
+    )
+    summary = manager.summarize_session(session_id="s1", tenant_id="t1")
+
+    assert len(writes) == 1
+    assert len(retrieved) == 1
+    assert retrieved[0].content == "I prefer low-volatility funds"
+    assert "low-volatility funds" in summary
