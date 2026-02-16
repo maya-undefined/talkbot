@@ -116,7 +116,9 @@ def test_agent_run_falls_back_on_openai_429(monkeypatch) -> None:
     monkeypatch.setattr("app.api.routes_agent_run.answer_with_openai", rate_limited)
 
     result = asyncio.run(_run_llm(req, []))
-    assert "Answer (demo):" in result
+    assert "Disclosure:" in result
+    assert "SYSTEM:" not in result
+    assert "Q:" not in result
 
 
 def test_agent_run_retrieve_context_handles_embedding_429(monkeypatch) -> None:
