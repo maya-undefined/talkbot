@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from .api.routes_ingest_pg import router as ingest_pg_router
 from .api.routes_chat_pg import router as chat_pg_router
+from .api.routes_agent_run import router as agent_run_router
 
 app = FastAPI(title="Financial Advisor Bot — Modular", version="0.2.0")
 
@@ -10,3 +11,4 @@ async def root():
 
 app.include_router(ingest_pg_router, prefix="")
 app.include_router(chat_pg_router, prefix="")
+app.include_router(agent_run_router, prefix="")
