@@ -9,6 +9,28 @@ from .openai_client import OPENAI
 CHAT_MODEL = "gpt-4o-mini"  # fast, good for tool use; upgrade per budget
 
 
+def _context_title_and_page(block: Dict[str, Any], index: int) -> tuple[str, str]:
+    """Return a display title/page pair for document or memory context blocks."""
+
+    if block.get("type") == "memory":
+        memory_type = str(block.get("memory_type") or "memory")
+        return f"Memory ({memory_type})", "-"
+
+    meta = block.get("meta") if isinstance(block.get("meta"), dict) else {}
+    doc_id = str(block.get("doc_id") or f"source_{index}")
+    title = str(meta.get("title") or doc_id)
+    page = str(meta.get("page") or "?")
+    return title, page
+
+
+def _context_snippet(block: Dict[str, Any]) -> str:
+    """Return a bounded context snippet for mixed retrieval block shapes."""
+
+    if block.get("type") == "memory":
+        return str(block.get("content") or "")[:50000]
+    return str(block.get("text") or "")[:50000]
+
+
 def _build_context_prefix(context_blocks: List[Dict[str, Any]]) -> str:
     """Build a compact retrieval prefix for grounding and citation instructions."""
 
@@ -17,10 +39,14 @@ def _build_context_prefix(context_blocks: List[Dict[str, Any]]) -> str:
 
     ctx_text: list[str] = []
     for i, block in enumerate(context_blocks[:6], 1):
-        title = block["meta"].get("title", block["doc_id"])
-        page = block["meta"].get("page", "?")
-        snippet = block["text"][:50000]
+        title, page = _context_title_and_page(block, i)
+        snippet = _context_snippet(block)
+        if not snippet:
+            continue
         ctx_text.append(f"[{i}] {title} p.{page}: {snippet}\n")
+
+    if not ctx_text:
+        return ""
 
     return (
         "Use the following sources to answer. "

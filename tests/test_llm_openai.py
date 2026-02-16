@@ -60,3 +60,35 @@ def test_answer_with_openai_no_context_keeps_messages_unchanged(monkeypatch) -> 
         {"role": "system", "content": "sys"},
         {"role": "user", "content": "plain question"},
     ]
+
+
+def test_answer_with_openai_handles_memory_context_blocks(monkeypatch) -> None:
+    """Memory context blocks should not raise key errors during prefix build."""
+
+    captured: dict[str, object] = {}
+
+    async def fake_responses(_model: str, messages: list[dict], tools=None) -> str:
+        captured["messages"] = messages
+        captured["tools"] = tools
+        return "ok"
+
+    monkeypatch.setattr("app.services.llm_openai.OPENAI.responses", fake_responses)
+
+    messages = [{"role": "user", "content": "what style do i like?"}]
+    context = [
+        {
+            "type": "memory",
+            "memory_type": "semantic",
+            "content": "I like low risk ETFs",
+            "tags": ["preference"],
+            "importance": 0.8,
+        }
+    ]
+
+    result = asyncio.run(answer_with_openai("sys", messages, context, []))
+
+    assert result == "ok"
+    payload_messages = captured["messages"]
+    assert isinstance(payload_messages, list)
+    assert "Memory (semantic)" in payload_messages[1]["content"]
+    assert "I like low risk ETFs" in payload_messages[1]["content"]
