@@ -8,6 +8,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 from app.api.routes_agent_run import _SESSION_LOCKS, _retrieve_context, _run_llm, agent_run
+from app.store.memory import MEMORY_MANAGER
 from app.main import app
 from app.models.agent_run import AgentRunRequest
 
@@ -215,3 +216,32 @@ def test_existing_endpoints_still_present_in_openapi() -> None:
     assert "/ingest_pg" in paths
     assert "/chat_pg" in paths
     assert "/agent/run" in paths
+
+
+def test_agent_run_persists_rule_based_memory_writes(monkeypatch) -> None:
+    """Stable user preference statements should produce memory writes."""
+
+    async def fake_context(_req, top_k: int = 8) -> list[dict]:
+        _ = top_k
+        return []
+
+    async def fake_run_llm(_req, context: list[dict]) -> str:
+        _ = context
+        return "ok"
+
+    MEMORY_MANAGER.reset_fallback()
+    monkeypatch.setattr("app.api.routes_agent_run._retrieve_context", fake_context)
+    monkeypatch.setattr("app.api.routes_agent_run._run_llm", fake_run_llm)
+
+    payload = {
+        "session_id": "s-mem",
+        "tenant_id": "t1",
+        "persona_id": "budget_coach",
+        "messages": [{"role": "user", "content": "I prefer concise weekly summaries"}],
+    }
+
+    resp = client.post("/agent/run", json=payload)
+    assert resp.status_code == 200
+    writes = resp.json()["memory_writes"]
+    assert len(writes) == 1
+    assert writes[0]["memory_type"] == "semantic"

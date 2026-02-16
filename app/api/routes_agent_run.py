@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections import defaultdict
 from typing import Awaitable, Callable, TypeVar
 
@@ -13,11 +14,13 @@ from fastapi import APIRouter, HTTPException
 
 from ..core.auth import require_tenant
 from ..core.personas import PERSONAS
-from ..models.agent_run import AgentRunRequest, AgentRunResponse, Trace
+from ..models.agent_run import AgentRunRequest, AgentRunResponse, MemoryWrite, Trace
+from ..models.sql import MemoryType
 from ..services.embeddings_openai import embed_texts
 from ..services.llm import LLM_ENGINE
 from ..services.llm_openai import answer_with_openai
 from ..services.openai_client import OPENAI_API_KEY
+from ..store.memory import MEMORY_MANAGER, MemoryWriteRequest
 from ..store.pgvector_repo import PGV
 
 router = APIRouter()
@@ -60,11 +63,28 @@ def _fallback_assistant_message(req: AgentRunRequest, context: list[dict]) -> st
 
 
 async def _retrieve_context(req: AgentRunRequest, top_k: int = 8) -> list[dict]:
-    """Retrieve minimal vector-search context for the request."""
+    """Retrieve vector-search docs and memory items for the request."""
 
     user_last = next((m.content for m in reversed(req.messages) if m.role == "user"), "")
     if not user_last:
         return []
+
+    memory_items = MEMORY_MANAGER.retrieve(
+        session_id=req.session_id,
+        tenant_id=req.tenant_id,
+        query_text=user_last,
+        top_k=top_k,
+    )
+    memory_context = [
+        {
+            "type": "memory",
+            "memory_type": item.type.value if hasattr(item.type, "value") else str(item.type),
+            "content": item.content,
+            "tags": item.tags or [],
+            "importance": float(item.importance or 0.0),
+        }
+        for item in memory_items
+    ]
 
     async def _embed_query() -> list:
         return await embed_texts([user_last])
@@ -74,10 +94,11 @@ async def _retrieve_context(req: AgentRunRequest, top_k: int = 8) -> list[dict]:
 
     except httpx.HTTPStatusError as exc:
         if _is_rate_limited(exc):
-            return []
+            return memory_context
         raise
 
-    return PGV.search(req.tenant_id, query_vector, top_k=top_k)
+    doc_context = PGV.search(req.tenant_id, query_vector, top_k=top_k)
+    return memory_context + doc_context
 
 
 async def _run_llm(req: AgentRunRequest, context: list[dict]) -> str:
@@ -103,6 +124,48 @@ async def _run_llm(req: AgentRunRequest, context: list[dict]) -> str:
         raise
 
 
+def _extract_memory_writes(req: AgentRunRequest) -> list[MemoryWriteRequest]:
+    """Extract stable user preferences/facts with simple pattern rules."""
+
+    writes: list[MemoryWriteRequest] = []
+    for message in req.messages:
+        if message.role != "user":
+            continue
+        text = message.content.strip()
+        if not text:
+            continue
+
+        lowered = text.lower()
+        if "i prefer" in lowered or "i like" in lowered:
+            writes.append(
+                MemoryWriteRequest(
+                    tenant_id=req.tenant_id,
+                    session_id=req.session_id,
+                    memory_type=MemoryType.SEMANTIC,
+                    content=text,
+                    tags=["preference"],
+                    importance=0.8,
+                    source="agent_run.rule.preference",
+                )
+            )
+            continue
+
+        if re.search(r"\bmy name is\b|\bi am\b", lowered):
+            writes.append(
+                MemoryWriteRequest(
+                    tenant_id=req.tenant_id,
+                    session_id=req.session_id,
+                    memory_type=MemoryType.SEMANTIC,
+                    content=text,
+                    tags=["user_fact"],
+                    importance=0.75,
+                    source="agent_run.rule.identity",
+                )
+            )
+
+    return writes
+
+
 @router.post("/agent/run", response_model=AgentRunResponse)
 async def agent_run(req: AgentRunRequest) -> AgentRunResponse:
     """Execute a minimal agent run using existing retrieval and LLM wiring."""
@@ -112,9 +175,22 @@ async def agent_run(req: AgentRunRequest) -> AgentRunResponse:
     async with lock:
         context = await _retrieve_context(req)
         assistant_message = await _run_llm(req, context)
+        extracted_writes = _extract_memory_writes(req)
+        persisted_memories = MEMORY_MANAGER.write(extracted_writes)
+        MEMORY_MANAGER.summarize_session(req.session_id, req.tenant_id)
+
+        response_writes = [
+            MemoryWrite(
+                memory_type=(item.type.value if hasattr(item.type, "value") else str(item.type)),
+                key=item.id,
+                value={"content": item.content, "tags": item.tags or []},
+            )
+            for item in persisted_memories
+        ]
+
         return AgentRunResponse(
             assistant_message=assistant_message,
             actions=[],
-            memory_writes=[],
+            memory_writes=response_writes,
             trace=Trace(trace_id=str(uuid4())),
         )
